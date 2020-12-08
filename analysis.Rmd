@@ -1,0 +1,321 @@
+---
+title: "sm56_project4_analysis"
+author: "Raja Mukherjee"
+date: "11/28/2020"
+output:
+  pdf_document: default
+  html_document: 
+    # theme: readable
+    toc: yes
+urlcolor: cyan
+---
+
+```{r setup, include=FALSE}
+
+rm(list = ls())
+
+set.seed(9540)
+
+library(tidyverse)
+library(dplyr)
+library(recommenderlab)
+library(reshape2)
+library(data.table)
+
+```
+
+
+
+
+## System 1 
+
+Primary objective of System 1 to provide a list of movies based of users selection of a particular genre.    
+
+### Preprocessing steps for first movie
+  - Ingest movies file, ratings file and users file.
+
+### First recommendation scheme - All Time Most Popular - Highest Rating Among Most Reviewed
+  - Join these files using ratings and movies file using MovieID key
+  - Remove records (ratings) for movies which have recieved less than 47 rating.
+  - Rating were summed up by each movie, so it evaluates to net amount of stars received. 
+  - This is based on the intuition that more successful/seen movies have received more reviews.           
+    And, also the fact that people are ratings a movie shows that they have formed an opinion about it.
+  - Distribution of sum of stars for each movie show that approx. 100 movies have received a lot of ratings over the years. 
+    While the rest of the movies and received a decent amount of ratings.
+  
+  
+
+```{r include=FALSE}
+###Read Movies from downloaded file
+movies = read.csv('movie_recommendation/data/movies.csv')
+#####Read Ratings from downloaded file
+ratings = read.csv('movie_recommendation/data/ratings.csv')
+####Read Users from downloaded file
+users = read.csv('movie_recommendation/data/users.csv')
+###Load Consolidated data frame
+# consl = read.csv("movie_recommendation/data/consl.csv")
+
+```
+
+  
+```{r echo=FALSE}
+
+consl_dist = ratings %>% 
+  group_by(MovieID) %>% 
+  summarise(num_ratings = n(),
+            sum_ratings = sum(Rating)) %>% 
+  filter(num_ratings > 47) %>% 
+  inner_join(movies, by = "MovieID")
+
+tmp = t(data.frame(quantile(consl_dist$sum_ratings, probs = seq(0, 1, 0.05))))
+row.names(tmp) = NULL
+print("Distribution of Sum of Ratings by MovieID")
+data.table(tmp)
+
+ratings_gt1rvw = ratings %>% 
+    inner_join(consl_dist, by = "MovieID")
+
+consl_gt1rvw = consl_dist
+
+hist(x=consl_dist$sum_ratings)
+
+```
+```{r echo=FALSE}
+
+ratings_rcnt = ratings %>% 
+  arrange(desc(Timestamp)) %>% 
+  head(10000)
+
+consl_dist = ratings_rcnt %>% 
+  group_by(MovieID) %>% 
+  summarise(num_ratings = n(),
+            sum_ratings = sum(Rating)) #%>% 
+  # filter(num_ratings > 47) %>% 
+  # inner_join(movies, by = "MovieID")
+
+tmp = t(data.frame(quantile(consl_dist$sum_ratings, probs = seq(0, 1, 0.05))))
+row.names(tmp) = NULL
+print("Distribution of Sum of Ratings by MovieID")
+data.table(tmp)
+
+hist(x=consl_dist$sum_ratings)
+
+```
+  
+  
+### Second recommendation scheme - Trending Movies (Recent reviews) - Highest Rating Among Most Reviewed
+  - Since I was continually hitting the barrier of out of memory, had to implement the model/scheme on a subset of data.             
+    Selected most recent rated 10000 rows by timestamp.           
+  - Join these files using ratings and movies file using MovieID key
+  - Remove records (ratings) for movies which have recieved less than 47 rating.
+  - This is exactly same as previous recommendation, difference being that we only consider most recent 10000 reviews by Timestamp column.
+  - Here also we see similar distribution of number of movies.           
+
+## System 2
+Shiny Hosted App - https://rajamukherjee.shinyapps.io/movie_recommendation/?_ga=2.267501194.523982317.1607448657-1652788879.1607109954
+
+### Preprocessing steps
+    - Steps to normalize and improve skewness 
+    - Movies which had received rating from less than 47 users were removed, as they might skew inferences/model train. This was around approx. 5% of observations.
+    - Rating were normalized using z-score. This helped reduce skewness.
+    
+### Considered collaborative systems                 
+    - Models considered were UBCF with Cosine similarity, IBCF with Cosine similarity, IBCF with Pearson similarity, Random Model (benchmark model), and Popular model.
+      - UBCF with Cosine similarity: This algorithm classified users together by grouping together which users provided similar rating to same movies.
+      - IBCF with Cosine similarity: Items which were classified by same users with similar rating were grouped together.
+    - Details regarding training, evaluation and parameters - 
+      - Recommenderlab package (evaluationScheme and evaluate) was used to evaluate between various models.                    
+      - nn (neighbours) = 50 was considered to avoid NA issues while recommending
+      - k = 4 (cross validation 4 fold)
+      - Since Ratings are skewed towards higher scores, goodRating is set to 4.
+      - "given" parameter is set to 15 (as this is minimum of items per user) so these items per user for training and rest for calculating prediction errors.
+
+
+```{r include=FALSE}
+
+# consl = ratings_raw %>% 
+#     group_by(MovieID) %>% 
+#     summarise(num_ratings = n()) %>% 
+#     filter(num_ratings > 47)
+# quantile(consl_dist$num_ratings, probs = seq(0, 1, 0.05))
+# 
+# consl_dist = consl %>% 
+#   group_by(MovieID) %>% 
+#   summarise(num_ratings = n()) %>% 
+#   group_by(num_ratings) %>%
+#   summarise(num_movies = n()) %>% 
+#   arrange(num_ratings) 
+# 
+# quantile(consl_dist$num_ratings, probs = seq(0, 1, 0.05))
+# 
+# consl_dist = consl %>% 
+#   group_by(MovieID) %>% 
+#   summarise(num_ratings = n()) 
+# 
+# consl_gt1rvw = consl %>%
+#   inner_join(consl_dist, by = "MovieID") %>%
+#   filter(num_ratings > 47)
+
+```
+
+<!-- ## Preprocess data for filtering / optimization -->
+```{r include=FALSE}
+
+ratings_2nd_scheme = ratings_gt1rvw %>% 
+  arrange(desc(Timestamp)) 
+  
+movies_2nd_scheme = movies %>% 
+  filter(MovieID %in% unique(ratings_2nd_scheme$MovieID)) 
+
+#Pivot all movies by userid
+g = ratings_2nd_scheme %>% 
+  pivot_wider(id_cols = UserID, names_from = MovieID, values_from = Rating)
+#Convert to matrix
+g_matrix = as.matrix(g[,-1])
+#Convert to realRatingMatrix data structure for recommenderlab use - this is a sparse matrix useful
+rating_matrix = as(g_matrix, "realRatingMatrix")
+
+```
+
+Minimum Number of movies per user (The "given" parameter cannot be greater than this number)
+```{r echo=FALSE}
+
+min(rowCounts(rating_matrix))
+
+
+```
+
+```{r eval=FALSE, include=FALSE}
+
+# min(rowCounts(movies_2nd_scheme))
+names(recommenderRegistry$get_entries())
+
+vapply(recommenderRegistry$get_entries(dataType = "realRatingMatrix"), 
+       '[[', 
+       FUN.VALUE = "character", 
+       "description")
+
+ubcf_model_description <- tail(recommenderRegistry$get_entries(dataType = "realRatingMatrix"), 1)
+ubcf_model_description
+
+datasets_available <- data(package = "recommenderlab")
+datasets_available$results[,4] # titles
+
+data(MovieLense)
+class(MovieLense)
+movie_r <- MovieLense 
+remove(MovieLense)
+
+library(pryr)
+object_size(movie_r)
+object_size(as(movie_r, "matrix"))
+
+getRatingMatrix(movie_r[1:10, 1:4])
+
+
+
+```
+
+
+<!-- Create Evaluation Scheme - 10 Fold cross-validation with all-but-1 items for learning -->
+```{r eval=FALSE, include=TRUE}
+
+evlt <- evaluationScheme(data = rating_matrix, 
+                         method = "split", 
+                         k = 4,
+                         given = 15,
+                         goodRating = 4)
+evlt
+
+
+```
+
+
+
+Training different recommender systems (using train data)
+```{r eval=FALSE, include=TRUE}
+# eval=FALSE, include=FALSE
+models_to_evaluate = list(
+  `UBCF Pearson` = list(name = "UBCF",
+                        param = list(normalize = "Z-score", method = "pearson", nn = 50)),
+  `UBCF Cosine` = list(name = "UBCF",
+                       param = list(normalize = "Z-score", method = "cosine", nn = 50)),
+  `IBCF Pearson` = list(name = "IBCF",
+                        param = list(normalize = "Z-score", method = "pearson", normalize_sim_matrix = TRUE)),
+  `IBCF Cosine` = list(name = "IBCF",
+                       param = list(normalize = "Z-score", method = "cosine", normalize_sim_matrix = TRUE)),
+  `Random` = list(name = "RANDOM",
+                  param=NULL),
+  `Popular` = list(name = "POPULAR",
+                   param = NULL)
+)
+
+n_recommendations = c(5, 10, 15)
+
+list_results = evaluate(x = evlt,
+                        method = models_to_evaluate,
+                        n = n_recommendations
+                        )
+
+# Save the model to a file
+save(list_results, file = 'movie_recommendation/model/run_results.rda')
+
+```
+
+# Loading saved models, and performing evaluation
+```{r echo=TRUE}
+
+# save(list_results, file = 'model/run_results.rda')
+# print(getwd())
+n_recommendations = c(5, 10, 15)
+load(file = 'movie_recommendation/model/run_results.rda')
+
+```
+
+Though below graphs show that Popular seems to be performing the best as shown in ROC curve below,
+  I could only understand how IBCF and UBCF works and so have used these two in final recommendations.
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+avg_conf_matr <- function(results) {
+  
+  tmp <- results %>%
+    # Pull into a list of all confusion matrix information for one model
+    getConfusionMatrix()  %>%  
+    as.list() 
+    # Calculate average value of 4 cross-validation rounds  
+    as.data.frame(Reduce("+",tmp) / length(tmp)) %>% 
+    mutate(n = n_recommendations) %>%
+    # select only columns needed and sorting out order
+    select('n', 'precision', 'recall', 'TPR', 'FPR') 
+}
+
+# Using map() to iterate function across all models
+results_tbl <- list_results %>%
+  map(avg_conf_matr) %>% 
+# Turning into an unnested tibble
+  enframe() %>%
+# Unnesting to have all variables on same level
+  unnest()
+results_tbl
+
+results_tbl %>%
+  ggplot(aes(FPR, TPR, 
+             colour = fct_reorder2(as.factor(name), 
+                      FPR, TPR))) +
+  geom_line() +
+  geom_label(aes(label = n))  +
+  labs(title = "ROC curves", colour = "Model") +
+  theme_grey(base_size = 14)
+
+results_tbl %>%
+  ggplot(aes(recall, precision, 
+             colour = fct_reorder2(as.factor(name),  
+                      precision, recall))) +
+  geom_line() +
+  geom_label(aes(label = n))  +
+  labs(title = "Precision-Recall curves", colour = "Model") +
+  theme_grey(base_size = 14)
+
+```
